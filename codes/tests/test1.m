@@ -22,7 +22,7 @@ params.Kp = 6;
 params.Kd = 5;
 
 % experiment sweep
-sigma_vals = [0.1, 0.3, 0.5, 1, 1.5, 2, 3];
+sigma_vals = [0.1, 0.5, 1, 1.5, 2, 3];
 psi0_vals  = [75, 60, 45, 30, 15] * pi/180;
 omega0     = 0.0;
 
@@ -197,4 +197,4 @@ end
 xlabel('$V(x)$','FontSize',22);
 ylabel('$u$','FontSize',22);
 xlim([0 Vmax_all]);
-legend(h_sigma, 'Location','best');
+legend(h_sigma, 'Location','best', 'NumColumns',2);

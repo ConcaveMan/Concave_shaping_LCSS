@@ -6,15 +6,15 @@
 %   3) optimal-decay CLF-QP with q_delta = 1e5, q_rho = 200
 %   4) optimal-decay CLF-QP with q_delta = 1e5, q_rho = 300
 %   5) optimal-decay CLF-QP with q_delta = 1e5, q_rho = 500
-%   6) concave-shaped CLF-QP with baseline sigma = 3 and r = 1
+%   6) concave-shaped CLF-QP with baseline sigma = 3 and fixed r
 %
 % Plots:
 %   Figure (e): normalized V(t)
-%   Figure (f): u versus V, legend shows total energy integral
+%   Figure (f): effective slack s_eff versus V
 %
-% Metrics:
-%   epsilon/c = 1e-1, 1e-2, 1e-3
-%   convergence time, energy, nominal rate, peak input, mean solve time, integrated slack
+% Effective slack:
+%   linear / concave:  s_eff = delta
+%   optimal-decay:     s_eff = delta + (1-rho)*sigma_d*V
 
 clear; close all; clc;
 
@@ -36,22 +36,25 @@ params.Kd = 5;
 
 sigma_linear  = 3;
 sigma_concave = 3;
-sigma_optimal = 5;
+sigma_d       = 5;
+sigma_optimal = sigma_d;
 
 params.sigma_H = sigma_optimal;
-params.q_slack = 1e6;   % delta slack penalty
-params.q_rho   = 1e2;   % default rho penalty
+params.q_slack = 1e5;
+params.q_rho   = 1e2;
 
 with_slack_linear  = true;
 with_slack_optimal = true;
-with_slack_concave = false;
+with_slack_concave = true;
 
 x0 = [pi/4; 0.0];
 
 kmin = 0.1;
-kmax = 2.1;
-p    = 1.0;
-r_vals = 1;
+kmax = 2.2;
+shape_p = 1;
+
+% Fixed design parameter. Use r<1 for endpoint-relaxed shaping.
+r_vals = 0.9;
 
 eps_ratios = [1e-1, 1e-2, 1e-3];
 
@@ -69,6 +72,17 @@ params.sigma = sigma_concave;
 [P, Vfun, ~] = build_quadratic_clf(params);
 c = Vfun(x0);
 eps_levels = eps_ratios * c;
+
+%% ----------------------- Fixed concave design check -----------------------
+disp('--- Fixed concave design check ---');
+for ir = 1:numel(r_vals)
+    for ie = 1:numel(eps_ratios)
+        eps_i = eps_ratios(ie)*c;
+        sig_i = rational_window_rate(eps_i,c,sigma_concave,kmin,kmax,r_vals(ir));
+        fprintf('r = %.3f, eps/c = %.1e, sigma_alpha = %.4f\n', ...
+            r_vals(ir), eps_ratios(ie), sig_i);
+    end
+end
 
 %% ----------------------- Simulate linear -----------------------
 params.sigma = sigma_linear;
@@ -257,7 +271,7 @@ for ir = 1:nr
     X(1,:) = x0.'; t(1)=0; xk = x0; tk = 0;
 
     for k = 1:N-1
-        [uk, sk, Vk, rhok, tk_solve] = clf_qp_concave(xk, params, P, c, r_i, kmin, kmax, p, with_slack_concave);
+        [uk, sk, Vk, rhok, tk_solve] = clf_qp_concave(xk, params, P, c, r_i, kmin, kmax, shape_p, with_slack_concave);
 
         if isempty(uk), uk = 0; else, uk = uk(1); end
         if isempty(sk), sk = NaN; else, sk = sk(1); end
@@ -279,16 +293,31 @@ for ir = 1:nr
     traj_i.t=t; traj_i.X=X; traj_i.tu=tu; traj_i.u=u; traj_i.V=V;
     traj_i.slack=s; traj_i.rho=rho; traj_i.solve_t=solve_t;
 
+    sig_label = rational_window_rate(1e-2*c,c,sigma_concave,kmin,kmax,r_i);
+
     R(ir).r = r_i;
     R(ir).traj = traj_i;
-    R(ir).label = sprintf('concave, $r=%.1f$, $\\sigma=3$', r_i);
+    R(ir).label = sprintf('concave, $r=%.2f$, $\\sigma_{\\alpha}=%.2f$', r_i, sig_label);
+end
+
+%% ----------------------- Effective slack -----------------------
+traj_lin.eff_slack = sanitize_slack(traj_lin.slack);
+
+traj_opt_100.eff_slack = effective_slack_optimal(traj_opt_100, sigma_d);
+traj_opt_200.eff_slack = effective_slack_optimal(traj_opt_200, sigma_d);
+traj_opt_300.eff_slack = effective_slack_optimal(traj_opt_300, sigma_d);
+traj_opt_500.eff_slack = effective_slack_optimal(traj_opt_500, sigma_d);
+
+for ir = 1:nr
+    R(ir).traj.eff_slack = sanitize_slack(R(ir).traj.slack);
 end
 
 %% ----------------------- Quick check -----------------------
-disp('max slack (q_rho=100):'); disp(max(traj_opt_100.slack));
-disp('max slack (q_rho=200):'); disp(max(traj_opt_200.slack));
-disp('max slack (q_rho=300):'); disp(max(traj_opt_300.slack));
-disp('max slack (q_rho=500):'); disp(max(traj_opt_500.slack));
+disp('max effective slack (q_rho=100):'); disp(max(traj_opt_100.eff_slack));
+disp('max effective slack (q_rho=200):'); disp(max(traj_opt_200.eff_slack));
+disp('max effective slack (q_rho=300):'); disp(max(traj_opt_300.eff_slack));
+disp('max effective slack (q_rho=500):'); disp(max(traj_opt_500.eff_slack));
+disp('max effective slack (concave):'); disp(max(R(1).traj.eff_slack));
 
 disp('max rho   (q_rho=100):'); disp(max(traj_opt_100.rho));
 disp('max rho   (q_rho=200):'); disp(max(traj_opt_200.rho));
@@ -296,14 +325,29 @@ disp('max rho   (q_rho=300):'); disp(max(traj_opt_300.rho));
 disp('max rho   (q_rho=500):'); disp(max(traj_opt_500.rho));
 
 %% ----------------------- Plot style -----------------------
-col_lin = [0 0 0];             % linear black
-col_con = [1 0 0];             % concave red
-col_opt = [0 0 1];   % optimal blue
+col_lin = [0 0 0];
+col_con = [1 0 0];
+col_opt = [0 0 1];
 
 mk100 = 'o';
 mk200 = 's';
 mk300 = 'd';
 mk500 = '^';
+
+%% ----------------------- Common legend metrics -----------------------
+% peak input
+u_max_lin = max(abs(traj_lin.u));
+u_max_100 = max(abs(traj_opt_100.u));
+u_max_200 = max(abs(traj_opt_200.u));
+u_max_300 = max(abs(traj_opt_300.u));
+u_max_500 = max(abs(traj_opt_500.u));
+
+% input energy: int_0^T u^2 dt
+E_lin = sum(traj_lin.u.^2) * dt;
+E_100 = sum(traj_opt_100.u.^2) * dt;
+E_200 = sum(traj_opt_200.u.^2) * dt;
+E_300 = sum(traj_opt_300.u.^2) * dt;
+E_500 = sum(traj_opt_500.u.^2) * dt;
 
 %% ----------------------- Plot (e): V(t) -----------------------
 figure('Color','w','Name','Experiment 3: V(t)');
@@ -311,133 +355,207 @@ hold on; grid on; box on;
 set(gca,'YScale','log');
 
 plot(traj_lin.tu, max(traj_lin.V/c,1e-12), '-', ...
-    'Color', col_lin, 'LineWidth', 2.6, ...
-    'DisplayName', 'linear, $\sigma=3$');
+    'Color', col_lin, ...
+    'LineWidth', 2.6, ...
+    'DisplayName', sprintf( ...
+    'linear, $\\|u\\|_{\\max}=%.2f$', ...
+    u_max_lin));
 
 plot(traj_opt_100.tu, max(traj_opt_100.V/c,1e-12), '-', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-    'Marker', mk100, 'MarkerIndices', 1:20:length(traj_opt_100.tu), ...
-    'DisplayName', 'optimal decay, $q_{\rho}=100,\sigma_H=5~~~$');
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk100, ...
+    'MarkerIndices', 1:20:length(traj_opt_100.tu), ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=100$, $\\|u\\|_{\\max}=%.2f$', ...
+    u_max_100));
 
 plot(traj_opt_200.tu, max(traj_opt_200.V/c,1e-12), '--', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-    'Marker', mk200, 'MarkerIndices', 1:20:length(traj_opt_200.tu), ...
-    'DisplayName', 'optimal decay, $q_{\rho}=200,\sigma_H=5~~~$');
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk200, ...
+    'MarkerIndices', 1:20:length(traj_opt_200.tu), ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=200$, $\\|u\\|_{\\max}=%.2f$', ...
+    u_max_200));
 
 plot(traj_opt_300.tu, max(traj_opt_300.V/c,1e-12), '-', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-     'MarkerIndices', 1:20:length(traj_opt_300.tu), ...
-    'DisplayName', 'optimal decay, $q_{\rho}=300,\sigma_H=5~~~$');
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk300, ...
+    'MarkerIndices', 1:20:length(traj_opt_300.tu), ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=300$, $\\|u\\|_{\\max}=%.2f$', ...
+    u_max_300));
 
 plot(traj_opt_500.tu, max(traj_opt_500.V/c,1e-12), '-.', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-    'Marker', mk500, 'MarkerIndices', 1:20:length(traj_opt_500.tu), ...
-    'DisplayName', 'optimal decay, $q_{\rho}=500,\sigma_H=5~~~$');
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk500, ...
+    'MarkerIndices', 1:20:length(traj_opt_500.tu), ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=500$, $\\|u\\|_{\\max}=%.2f$', ...
+    u_max_500));
 
 for ir = 1:nr
+    u_max_con = max(abs(R(ir).traj.u));
+
     plot(R(ir).traj.tu, max(R(ir).traj.V/c,1e-12), '-', ...
-        'Color', col_con, 'LineWidth', 2.2, ...
-        'DisplayName', R(ir).label);
+        'Color', col_con, ...
+        'LineWidth', 2.2, ...
+        'DisplayName', sprintf( ...
+        'concave, $r=%.2f$, $\\|u\\|_{\\max}=%.2f$', ...
+        R(ir).r, u_max_con));
+end
+
+for rr = eps_ratios
+    yline(rr, ':', sprintf('$V/V_0=10^{%d}$', round(log10(rr))), ...
+        'Interpreter','latex', ...
+        'LineWidth', 1.1, ...
+        'HandleVisibility','off');
 end
 
 xlabel('$t$','FontSize',22);
-ylabel('$V(x(t))$','FontSize',22);
+ylabel('$V(x(t))/V_0$','FontSize',22);
+
 ylim([1e-4 1]);
 yticks([1e-4 1e-3 1e-2 1e-1 1]);
-yticklabels({'$10^{-4}V_0$','$10^{-3}V_0$','$10^{-2}V_0$','$10^{-1}V_0$','$V_0$'});
+
 legend('Location','northeast');
 legend boxon
 
-%% ----------------------- Plot (f): u versus V -----------------------
-figure('Color','w','Name','Experiment 3: u versus V');
+%% ----------------------- Plot (f): effective slack versus V -----------------------
+figure('Color','w','Name','Experiment 3: effective slack versus V');
 hold on; grid off; box on;
 
-% total energies
-E_lin = sum(traj_lin.u.^2) * dt;
-E_100 = sum(traj_opt_100.u.^2) * dt;
-E_200 = sum(traj_opt_200.u.^2) * dt;
-E_300 = sum(traj_opt_300.u.^2) * dt;
-E_500 = sum(traj_opt_500.u.^2) * dt;
-
-% number of markers on each optimal-decay curve
 nmk = 18;
 
-% linear: no marker
-plot(traj_lin.V, traj_lin.u, '-', ...
-    'Color', col_lin, 'LineWidth', 2.6, ...
-    'DisplayName', sprintf('linear, $\\int_0^T u^2\\,dt=%.2f$', E_lin));
+plot(traj_lin.V, traj_lin.eff_slack, '-', ...
+    'Color', col_lin, ...
+    'LineWidth', 2.6, ...
+    'DisplayName', sprintf( ...
+    'linear, $\\int_0^T u^2dt=%.2f$', ...
+    E_lin));
 
-% optimal q_rho = 100
-Vn = traj_opt_100.V / max(traj_opt_100.V(1),1e-12);
-targetV = linspace(1,0,nmk).^2;   % denser at large V, sparser at small V
-mk_idx = zeros(1,nmk);
-for ii = 1:nmk
-    [~, mk_idx(ii)] = min(abs(Vn - targetV(ii)));
-end
-mk_idx = unique(mk_idx);
+mk_idx = make_marker_indices(traj_opt_100.V, nmk);
+plot(traj_opt_100.V, traj_opt_100.eff_slack, '-', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk100, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=100$, $\\int_0^T u^2dt=%.2f$', ...
+    E_100));
 
-plot(traj_opt_100.V, traj_opt_100.u, '-', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-    'Marker', mk100, 'MarkerIndices', mk_idx, ...
-    'DisplayName', sprintf('optimal, $q_{\\rho}=100$, $\\int_0^T u^2\\,dt=%.2f$', E_100));
+mk_idx = make_marker_indices(traj_opt_200.V, nmk);
+plot(traj_opt_200.V, traj_opt_200.eff_slack, '--', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk200, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=200$, $\\int_0^T u^2dt=%.2f$', ...
+    E_200));
 
-% optimal q_rho = 200
-Vn = traj_opt_200.V / max(traj_opt_200.V(1),1e-12);
-targetV = linspace(1,0,nmk).^2;
-mk_idx = zeros(1,nmk);
-for ii = 1:nmk
-    [~, mk_idx(ii)] = min(abs(Vn - targetV(ii)));
-end
-mk_idx = unique(mk_idx);
+mk_idx = make_marker_indices(traj_opt_300.V, nmk);
+plot(traj_opt_300.V, traj_opt_300.eff_slack, '-', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk300, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=300$, $\\int_0^T u^2dt=%.2f$', ...
+    E_300));
 
-plot(traj_opt_200.V, traj_opt_200.u, '--', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-    'Marker', mk200, 'MarkerIndices', mk_idx, ...
-    'DisplayName', sprintf('optimal, $q_{\\rho}=200$, $\\int_0^T u^2\\,dt=%.2f$', E_200));
+mk_idx = make_marker_indices(traj_opt_500.V, nmk);
+plot(traj_opt_500.V, traj_opt_500.eff_slack, '-.', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk500, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', sprintf( ...
+    'optimal, $q_{\\rho}=500$, $\\int_0^T u^2dt=%.2f$', ...
+    E_500));
 
-% optimal q_rho = 300
-Vn = traj_opt_300.V / max(traj_opt_300.V(1),1e-12);
-targetV = linspace(1,0,nmk).^2;
-mk_idx = zeros(1,nmk);
-for ii = 1:nmk
-    [~, mk_idx(ii)] = min(abs(Vn - targetV(ii)));
-end
-mk_idx = unique(mk_idx);
-
-plot(traj_opt_300.V, traj_opt_300.u, '-', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-    'Marker', mk300, 'MarkerIndices', mk_idx, ...
-    'DisplayName', sprintf('optimal, $q_{\\rho}=300$, $\\int_0^T u^2\\,dt=%.2f$', E_300));
-
-% optimal q_rho = 500
-Vn = traj_opt_500.V / max(traj_opt_500.V(1),1e-12);
-targetV = linspace(1,0,nmk).^2;
-mk_idx = zeros(1,nmk);
-for ii = 1:nmk
-    [~, mk_idx(ii)] = min(abs(Vn - targetV(ii)));
-end
-mk_idx = unique(mk_idx);
-
-plot(traj_opt_500.V, traj_opt_500.u, '-.', ...
-    'Color', col_opt, 'LineWidth', 2.0, ...
-    'Marker', mk500, 'MarkerIndices', mk_idx, ...
-    'DisplayName', sprintf('optimal, $q_{\\rho}=500$, $\\int_0^T u^2\\,dt=%.2f$', E_500));
-
-% concave
 for ir = 1:nr
     E_con = sum(R(ir).traj.u.^2) * dt;
+
+    plot(R(ir).traj.V, R(ir).traj.eff_slack, '-', ...
+        'Color', col_con, ...
+        'LineWidth', 2.4, ...
+        'DisplayName', sprintf( ...
+        'concave, $r=%.2f$, $\\int_0^T u^2dt=%.2f$', ...
+        R(ir).r, E_con));
+end
+
+xlabel('$V(x)$','FontSize',22);
+ylabel('$s_{\rm eff}$','FontSize',22);
+
+xlim([0 c]);
+
+legend('Location','best');
+legend boxoff
+
+%% ----------------------- Plot (g): u versus V -----------------------
+figure('Color','w','Name','Experiment 3: u versus V');
+hold on; box on;
+
+nmk = 18;
+
+plot(traj_lin.V, traj_lin.u, '-', ...
+    'Color', col_lin, ...
+    'LineWidth', 2.6, ...
+    'DisplayName', 'linear');
+
+mk_idx = make_marker_indices(traj_opt_100.V, nmk);
+plot(traj_opt_100.V, traj_opt_100.u, '-', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk100, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', 'optimal, $q_{\rho}=100$');
+
+mk_idx = make_marker_indices(traj_opt_200.V, nmk);
+plot(traj_opt_200.V, traj_opt_200.u, '--', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk200, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', 'optimal, $q_{\rho}=200$');
+
+mk_idx = make_marker_indices(traj_opt_300.V, nmk);
+plot(traj_opt_300.V, traj_opt_300.u, '-', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk300, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', 'optimal, $q_{\rho}=300$');
+
+mk_idx = make_marker_indices(traj_opt_500.V, nmk);
+plot(traj_opt_500.V, traj_opt_500.u, '-.', ...
+    'Color', col_opt, ...
+    'LineWidth', 2.0, ...
+    'Marker', mk500, ...
+    'MarkerIndices', mk_idx, ...
+    'DisplayName', 'optimal, $q_{\rho}=500$');
+
+for ir = 1:nr
     plot(R(ir).traj.V, R(ir).traj.u, '-', ...
-        'Color', col_con, 'LineWidth', 2.2, ...
-        'DisplayName', sprintf('concave, $r=%.1f$, $\\int_0^T u^2\\,dt=%.2f$', R(ir).r, E_con));
+        'Color', col_con, ...
+        'LineWidth', 2.4, ...
+        'DisplayName', sprintf( ...
+        'concave, $r=%.2f$', ...
+        R(ir).r));
 end
 
 xlabel('$V(x)$','FontSize',22);
 ylabel('$u$','FontSize',22);
+
 xlim([0 c]);
-ylim([0 10]);
+ylim([0 params.u_max]);
+
 legend('Location','best');
 legend boxoff
-
 %% ----------------------- Metrics table -----------------------
 Controller = {};
 EpsRatio = [];
@@ -446,14 +564,17 @@ Energy = [];
 NominalRate = [];
 PeakInput = [];
 MeanSolve = [];
+PeakSlack = [];
 IntSlack = [];
+PeakEffSlack = [];
+IntEffSlack = [];
 
 traj_list = {traj_lin, traj_opt_100, traj_opt_200, traj_opt_300, traj_opt_500};
 name_list = {'linear_sigma3', 'optimal_qrho100', 'optimal_qrho200', 'optimal_qrho300', 'optimal_qrho500'};
 
 for ir = 1:numel(R)
     traj_list{end+1} = R(ir).traj;
-    name_list{end+1} = sprintf('concave_r%.1f_sigma3', R(ir).r);
+    name_list{end+1} = sprintf('concave_r%.2f_sigma3', R(ir).r);
 end
 
 for ic = 1:numel(traj_list)
@@ -476,9 +597,8 @@ for ic = 1:numel(traj_list)
         st = st(~isnan(st));
         if isempty(st), ms = nan; else, ms = mean(st); end
 
-        sl = traj.slack(1:idx);
-        sl = sl(~isnan(sl));
-        if isempty(sl), sl_int = nan; else, sl_int = sum(sl)*dt; end
+        sl = sanitize_slack(traj.slack(1:idx));
+        es = sanitize_slack(traj.eff_slack(1:idx));
 
         Controller{end+1,1} = name;
         EpsRatio(end+1,1)   = eps_ratios(ie);
@@ -487,10 +607,58 @@ for ic = 1:numel(traj_list)
         NominalRate(end+1,1)= sigma_nom;
         PeakInput(end+1,1)  = max(abs(traj.u(1:idx)));
         MeanSolve(end+1,1)  = ms;
-        IntSlack(end+1,1)   = sl_int;
+
+        PeakSlack(end+1,1)  = max(sl);
+        IntSlack(end+1,1)   = sum(sl.^2)*dt;
+
+        PeakEffSlack(end+1,1) = max(es);
+        IntEffSlack(end+1,1)  = sum(es.^2)*dt;
     end
 end
 
-Results = table(Controller, EpsRatio, Tconv, Energy, NominalRate, PeakInput, MeanSolve, IntSlack);
+Results = table(Controller, EpsRatio, Tconv, Energy, NominalRate, ...
+    PeakInput, MeanSolve, PeakSlack, IntSlack, PeakEffSlack, IntEffSlack);
+
 disp('--- Experiment 3 metrics ---');
 disp(Results);
+
+%% ========================================================================
+%% Helper functions
+%% ========================================================================
+
+function s = sanitize_slack(s)
+    s(isnan(s)) = 0;
+    s = max(s,0);
+end
+
+function seff = effective_slack_optimal(traj, sigma_d)
+    delta = sanitize_slack(traj.slack);
+
+    rho = traj.rho;
+    rho(isnan(rho)) = 1;
+    rho = min(max(rho,0),1);
+
+    seff = delta + (1-rho).*sigma_d.*traj.V;
+    seff = max(seff,0);
+end
+
+function mk_idx = make_marker_indices(V, nmk)
+    Vn = V / max(V(1),1e-12);
+    targetV = linspace(1,0,nmk).^2;
+    mk_idx = zeros(1,nmk);
+
+    for ii = 1:nmk
+        [~, mk_idx(ii)] = min(abs(Vn - targetV(ii)));
+    end
+
+    mk_idx = unique(mk_idx);
+end
+
+function sig = rational_window_rate(eps,c,sigmaL,kmin,kmax,r)
+    ell = (r-kmin)*c/(kmax-r);
+    T = (1/sigmaL)*( ...
+        (1/kmax)*log(c/eps) + ...
+        (kmax-kmin)/(kmax*kmin)* ...
+        log((kmin*c+kmax*ell)/(kmin*eps+kmax*ell)) );
+    sig = log(c/eps)/T;
+end
